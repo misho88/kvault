@@ -1,0 +1,307 @@
+#!/usr/bin/env python3
+
+import argparse
+import base64
+import json
+import os
+import re
+import secrets
+import shutil
+import subprocess
+import sys
+import tempfile
+import toml
+
+from pathlib import Path
+from getpass import getpass
+
+from cryptography.fernet import Fernet, InvalidToken
+from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+
+
+def valid_file_path(text):
+    path = Path(text)
+    if not path.parent.is_dir():
+        raise argparse.ArgumentTypeError(f"not a valid directory: {str(path.parent)}")
+    if path.exists() and path.is_dir():
+        raise argparse.ArgumentTypeError(f"is a directory: {str(path)}")
+    return path
+
+
+def positive_int(text):
+    i = int(text)
+    if i <= 0:
+        raise argparse.ArgumentTypeError(f"invalid positive_int value: {repr(text)}")
+    return i
+
+
+app = Path(__file__)
+parser = argparse.ArgumentParser(description=f'{app.name} - Simple Password Store')
+parser.add_argument('--vault-path', '-v', type=valid_file_path, required=True,
+    help="path to the encrypted data")
+parser.add_argument('--salt', '-s', type=str.encode,
+    help="the salt the key generator uses in conjunction with the password")
+parser.add_argument('--salt-path', '-p', type=valid_file_path,
+    help="specify the salt by path instead of directly; defaults to the "
+         "vault path but with the .salt extension")
+parser.add_argument('--which', '-w', nargs='*', default=[],
+    help="open some subset of the store instead of the whole store")
+parser.add_argument('--action', '-a',
+    help='what to do to the encrypted (subset of) the vault; the default is '
+         '"$EDITOR" or "nano"; "cat" and "xclip <" are good to get a '
+         'username or password; "{}" to put the filename somewhere other than '
+         'the end, e.g., "cp {} permanently_decrypted which is a bad idea"')
+parser.add_argument('--new-with-salt', type=str.encode,
+    help="(re-)encrypt the vault with this salt (there will be a password "
+         "prompt also; the salt is not saved unless --new-salt-path is passed")
+parser.add_argument('--new-with-salt-path', type=str.encode,
+    help="same as above but use the salt in this file")
+parser.add_argument('--new-with-salt-of-size', type=positive_int,
+    help="(re-)encrypt the vault with a salt of this size that will be saved "
+         "to --new-salt-path or its default")
+parser.add_argument('--new-salt-path', type=valid_file_path,
+    help="when using --new-with-salt-of-size, where to save the salt; the "
+         "default is to (over)write --salt-path or its default; '-' to print "
+         "to standard output")
+
+
+class ArgumentLogicError(Exception):
+    pass
+
+
+def get_salt_and_salt_path(args):
+    if args.salt is not None and args.salt_path is not None:
+        raise ArgumentLogicError(
+            "only one of --salt/-s and --salt-path/-p may be specified"
+        )
+    if args.salt is not None:
+        return args.salt, None
+    salt_path = (
+        args.salt_path
+        if args.salt_path is not None else
+        valid_file_path(str(args.vault_path.with_suffix('.salt')))
+    )
+    if not salt_path.exists():
+        return None, salt_path
+    salt = salt_path.read_bytes()
+    return salt, salt_path
+
+
+def get_vault_and_vault_path(args):
+    if not args.vault_path.exists():
+        return None, args.vault_path
+    vault = args.vault_path.read_bytes()
+    return vault, args.vault_path
+
+
+def get_action(args):
+    if args.action is not None:
+        action = args.action
+    else:
+        action = os.environ.get('EDITOR',  'nano')
+    if not re.search("{.*}", action):
+        action = f'{action} {{}}'
+    return action
+
+
+def get_which(args):
+    return args.which
+
+
+def get_new_salt_and_new_salt_path(args, salt_path):
+    if sum((
+        args.new_with_salt is not None,
+        args.new_with_salt_of_size is not None,
+        args.new_with_salt_path is not None,
+    )) not in (0, 1):
+        raise ArgumentLogicError(
+            "only one of --new-with-salt, --new-with-salt-of-size and "
+            "--new-with-salt-path may be specified"
+        )
+
+    if args.new_with_salt_path is not None and args.new_salt_path is not None:
+        raise ArgumentLogicError(
+            "only one of --new-with-salt-path and --new-salt-path may be "
+            "specified"
+        )
+
+    if args.new_with_salt is not None:
+        new_salt = args.new_with_salt
+        new_salt_path = args.new_salt_path
+        return new_salt, new_salt_path
+
+    if args.new_with_salt_of_size is not None:
+        new_salt = secrets.token_hex(args.new_with_salt_of_size).encode()
+        if args.new_salt_path is not None:
+            new_salt_path = args.new_salt_path
+        else:
+            new_salt_path = salt_path
+        return new_salt, new_salt_path
+    
+    if args.new_with_salt_path is None:
+        return None, None
+
+    if not args.new_with_salt_path.exists():
+        raise argparse.ArgumentTypeError(f"no such file: {args.new_with_salt_path}")
+
+    new_salt = args.new_with_salt_path.read_bytes()
+    return new_salt, None
+
+
+args = parser.parse_args()
+try:
+    salt, salt_path = get_salt_and_salt_path(args)
+    vault, vault_path = get_vault_and_vault_path(args)
+    if vault is not None and salt is None:
+        raise ArgumentLogicError("cannot decrypt vault without a salt")
+    if vault is None and salt is not None:
+        raise ArgumentLogicError("salt provided but the vault does not exist")
+    action = get_action(args)
+    which = get_which(args)
+    new_salt, new_salt_path = get_new_salt_and_new_salt_path(args, salt_path)
+    if vault is None and new_salt is None:
+        raise ArgumentLogicError(
+            "a new vault is to be created, but no new salt has been specified"
+        )
+except (ArgumentLogicError, argparse.ArgumentTypeError) as e:
+    print(e, file=sys.stderr)
+    sys.exit(3)
+
+
+def get_vault_key(vault, salt):
+    if vault is None:
+        return None
+
+    kdf = PBKDF2HMAC(  # worst class name ever, like, seriously
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=salt,
+        iterations=100000,
+        backend=default_backend()
+    )
+    password = getpass()
+    raw_key = kdf.derive(password.encode())
+    key = base64.urlsafe_b64encode(raw_key)
+    return key
+    
+
+def decrypt_vault(vault, key):
+    if vault is None:
+        return b''
+
+    fernet = Fernet(key)
+    return fernet.decrypt(vault)
+
+
+def encrypt_vault_data(data, key):
+    fernet = Fernet(key)
+    return fernet.encrypt(data)
+
+
+
+def data_to_tree(data):
+    return { 'root': json.loads(data) if data else {} }
+
+def tree_to_data(tree):
+    return json.dumps(tree['root']).encode()
+
+def which_node(tree, which):
+    parent = tree
+    name = 'root'
+    for child_name in which:
+        child = parent[name].setdefault(child_name, {})
+        parent = parent[name]
+        name = child_name
+    return parent, name
+
+
+def encode_node(node):
+    if isinstance(node, str):
+        return node.encode()
+    if isinstance(node, dict):
+        return toml.dumps(node).encode()
+    return toml.TomlEncoder().dump_value(node).encode()
+    
+
+def act_on_node_data(data, action):
+    with tempfile.NamedTemporaryFile() as file:
+        file.write(data)
+        file.flush()
+        subprocess.run(action.format(file.name), shell=True)
+        file.seek(0)
+        return file.read()
+
+def decode_node(data, node_type):
+    if issubclass(node_type, str):
+        return data.decode().rstrip('\n')
+    if issubclass(node_type, dict):
+        return toml.loads(data.decode())
+    return toml.TomlDecoder().load_value(data.decode())
+
+def get_new_vault_key(salt):
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=salt,
+        iterations=100000,
+        backend=default_backend()
+    )
+    while True:
+        password = getpass("New Password: ")
+        password2 = getpass("Repeat Password: ")
+        if password == password2:
+            break
+        else:
+            print("passwords do not match")
+    raw_key = kdf.derive(password.encode())
+    key = base64.urlsafe_b64encode(raw_key)
+    return key
+
+
+try:
+    vault_key = get_vault_key(vault, salt)
+    vault_data = decrypt_vault(vault, vault_key)
+    tree = data_to_tree(vault_data)
+    parent, name = which_node(tree, which)
+    node_data = encode_node(parent[name])
+
+    while True:
+        try:
+            new_node_data = act_on_node_data(node_data, action)
+            if new_node_data != node_data:
+                new_node = decode_node(new_node_data, type(parent[name]))
+            else:
+                new_node = None
+            break
+        except toml.TomlDecodeError as e:
+            print(e, e.doc.split('\n')[e.lineno - 1], sep='\n')
+            input("Errors in text. ENTER to try again; CTRL+C to cancel.")
+
+    do_write = False
+    if new_node is not None:
+        parent[name] = new_node
+        do_write = True
+
+    if new_salt is not None:
+        new_vault_key = get_new_vault_key(new_salt)
+        do_write = True
+    else:
+        new_vault_key = vault_key
+
+    if do_write:
+        if new_salt_path is not None:
+            new_salt_path.write_bytes(new_salt)
+        new_vault_data = tree_to_data(tree)
+        new_vault = encrypt_vault_data(new_vault_data, new_vault_key)
+
+        with tempfile.NamedTemporaryFile() as new_file:
+            new_file.write(new_vault)
+            new_file.flush()
+            shutil.copy(new_file.name, str(vault_path))
+except InvalidToken:
+    print("salt or password is wrong", file=sys.stderr)
+    exit(4)
+except KeyboardInterrupt:
+    print(file=sys.stderr)
