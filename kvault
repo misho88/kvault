@@ -279,8 +279,12 @@ try:
                 new_node = None
             break
         except toml.TomlDecodeError as e:
-            print(e, e.doc.split('\n')[e.lineno - 1], sep='\n')
-            input("Errors in text. ENTER to try again; CTRL+C to cancel.")
+            if node_data:  # if we're sure this is meant to be TOML data
+                print(e, e.doc.split('\n')[e.lineno - 1], sep='\n')
+                input("Errors in text. ENTER to try again; CTRL+C to cancel.")
+            else:  # otherwise, just assume it was supposed to be text
+                new_node = new_node_data.decode()
+                break
 
     do_write = False
     if new_node is not None:
