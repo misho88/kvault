@@ -56,7 +56,7 @@ parser.add_argument('--action', '-a',
 parser.add_argument('--new-with-salt', type=str.encode,
     help="(re-)encrypt the vault with this salt (there will be a password "
          "prompt also; the salt is not saved unless --new-salt-path is passed")
-parser.add_argument('--new-with-salt-path', type=str.encode,
+parser.add_argument('--new-with-salt-path', type=valid_file_path,
     help="same as above but use the salt in this file")
 parser.add_argument('--new-with-salt-of-size', type=positive_int,
     help="(re-)encrypt the vault with a salt of this size that will be saved "
@@ -100,7 +100,7 @@ def get_action(args):
     if args.action is not None:
         action = args.action
     else:
-        action = os.environ.get('EDITOR',  'nano')
+        action = os.environ.get('EDITOR', 'nano')
     if not re.search("{.*}", action):
         action = f'{action} {{}}'
     return action
@@ -139,7 +139,7 @@ def get_new_salt_and_new_salt_path(args, salt_path):
         else:
             new_salt_path = salt_path
         return new_salt, new_salt_path
-    
+
     if args.new_with_salt_path is None:
         return None, None
 
@@ -185,7 +185,7 @@ def get_vault_key(vault, salt):
     raw_key = kdf.derive(password.encode())
     key = base64.urlsafe_b64encode(raw_key)
     return key
-    
+
 
 def decrypt_vault(vault, key):
     if vault is None:
@@ -200,18 +200,19 @@ def encrypt_vault_data(data, key):
     return fernet.encrypt(data)
 
 
-
 def data_to_tree(data):
     return { 'root': json.loads(data) if data else {} }
 
+
 def tree_to_data(tree):
     return json.dumps(tree['root']).encode()
+
 
 def which_node(tree, which):
     parent = tree
     name = 'root'
     for child_name in which:
-        child = parent[name].setdefault(child_name, {})
+        parent[name].setdefault(child_name, {})
         parent = parent[name]
         name = child_name
     return parent, name
@@ -223,7 +224,7 @@ def encode_node(node):
     if isinstance(node, dict):
         return toml.dumps(node).encode()
     return toml.TomlEncoder().dump_value(node).encode()
-    
+
 
 def act_on_node_data(data, action):
     with tempfile.NamedTemporaryFile() as file:
@@ -233,12 +234,14 @@ def act_on_node_data(data, action):
         file.seek(0)
         return file.read()
 
+
 def decode_node(data, node_type):
     if issubclass(node_type, str):
         return data.decode().rstrip('\n')
     if issubclass(node_type, dict):
         return toml.loads(data.decode())
     return toml.TomlDecoder().load_value(data.decode())
+
 
 def get_new_vault_key(salt):
     kdf = PBKDF2HMAC(
