@@ -143,7 +143,7 @@ or just do it all in one go:
 ```
 $ kvault -v vault -w www.website.com pass -a 'xkcdpass | tee {} | xclip'
 Password:
-misho@calliope ~/git/kvault ‹master*› ⋙  xclip -o
+$ xclip -o
 tarantula browbeat coziness clamshell superman filled
 $ kvault -v vault -w www.website.com pass -a cat
 Password:
