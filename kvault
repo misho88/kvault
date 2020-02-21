@@ -7,13 +7,14 @@ import os
 import re
 import secrets
 import shutil
-import subprocess
 import sys
 import tempfile
 import toml
 
 from pathlib import Path
 from getpass import getpass
+from subprocess import run
+from datetime import datetime
 
 from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.backends import default_backend
@@ -65,6 +66,16 @@ parser.add_argument('--new-salt-path', type=valid_file_path,
     help="when using --new-with-salt-of-size, where to save the salt; the "
          "default is to (over)write --salt-path or its default; '-' to print "
          "to standard output")
+# git-related
+parser.add_argument('--add', '-A', default=False, action='store_true',
+    help="if passed, and the vault is a git repo, add (stage) the new vault")
+parser.add_argument('--commit', '-C', default=False, action='store_true',
+    help="if passed, and the vault is a git repo, commit the changes")
+parser.add_argument('--push', '-P', default=False, action='store_true',
+    help="if passed, and the vault is a git repo, push the changes upstream")
+parser.add_argument('--message', '-M',
+    help="the commit message; defaults to --which, unless it is empty, then "
+         "it's just the current time")
 
 
 class ArgumentLogicError(Exception):
@@ -150,14 +161,22 @@ def get_new_salt_and_new_salt_path(args, salt_path):
     return new_salt, None
 
 
+def get_git_args(args):
+    git_add = args.add
+    git_commit = args.commit
+    git_push = args.push
+    if args.message and not git_commit:
+        raise ArgumentLogicError("--message/-M passed without --commit/-C")
+    git_message = args.message or ' '.join(args.which) or datetime.utcnow()
+    return git_add, git_commit, git_push, git_message
+
+
 args = parser.parse_args()
 try:
     salt, salt_path = get_salt_and_salt_path(args)
     vault, vault_path = get_vault_and_vault_path(args)
     if vault is not None and salt is None:
         raise ArgumentLogicError("cannot decrypt vault without a salt")
-    if vault is None and salt is not None:
-        raise ArgumentLogicError("salt provided but the vault does not exist")
     action = get_action(args)
     which = get_which(args)
     new_salt, new_salt_path = get_new_salt_and_new_salt_path(args, salt_path)
@@ -165,6 +184,9 @@ try:
         raise ArgumentLogicError(
             "a new vault is to be created, but no new salt has been specified"
         )
+    if vault is None and salt is not None and new_salt is None:
+        raise ArgumentLogicError("salt provided but the vault does not exist")
+    git_add, git_commit, git_push, git_message = get_git_args(args)
 except (ArgumentLogicError, argparse.ArgumentTypeError) as e:
     print(e, file=sys.stderr)
     sys.exit(3)
@@ -230,7 +252,7 @@ def act_on_node_data(data, action):
     with tempfile.NamedTemporaryFile() as file:
         file.write(data)
         file.flush()
-        subprocess.run(action.format(file.name), shell=True)
+        run(action.format(file.name), shell=True)
         file.seek(0)
         return file.read()
 
@@ -307,6 +329,23 @@ try:
             new_file.write(new_vault)
             new_file.flush()
             shutil.copy(new_file.name, str(vault_path))
+
+    if git_add:
+        res = run(
+            f"cd {vault_path.parent} && git add {vault_path.name}",
+            shell=True,
+        )
+    if git_commit and res.returncode == 0:
+        res = run(
+            f"cd {vault_path.parent} && git commit -m '{git_message}'",
+            shell=True,
+        )
+    if git_push and res.returncode == 0:
+        res = run(
+            f"cd {vault_path.parent} && git push origin --all",
+            shell=True,
+        )
+
 except InvalidToken:
     print("salt or password is wrong", file=sys.stderr)
     exit(4)
