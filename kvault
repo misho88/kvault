@@ -96,7 +96,7 @@ def get_salt_and_salt_path(args):
     )
     if not salt_path.exists():
         return None, salt_path
-    salt = salt_path.read_bytes()
+    salt = salt_path.read_bytes().rstrip()
     return salt, salt_path
 
 
