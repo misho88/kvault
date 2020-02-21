@@ -14,7 +14,7 @@ encryption, hopefully that example is not too far off the mark.
 The unencrypted data, while it exists, is stored in `/tmp` with `0600` permissions,
 as far as I can tell (I used the `tempfile` module), so it's safe to use on
 personal machines and not at all on shared systems where others have root
-access. Only the bits of the vault the user wants access are put in this file;
+access. Only the bits of the vault the user wants to access are put in this file;
 the rest stays in memory.
 
 The encryption relies on two parts: a salt and a password. The salt should be
@@ -107,7 +107,7 @@ New Password:
 Repeat Password:
 ```
 
-To get data out of a vault. Change the action to `vim` or similar or leave it
+To get data out of a vault, use `cat`. Change the action to `vim` or similar or leave it
 out to edit that data. Some clipboard helper can be used to interact with the
 clipboard, e.g., `'xclip -i <'` to copy to clipboard and `'xclip -o >'` to paste
 from the clipboard.
@@ -143,7 +143,7 @@ or just do it all in one go:
 ```
 $ kvault -v vault -w www.website.com pass -a 'xkcdpass | tee {} | xclip'
 Password:
-misho@calliope ~/git/kvault ‹master*› ⋙  xclip -o
+$ xclip -o
 tarantula browbeat coziness clamshell superman filled
 $ kvault -v vault -w www.website.com pass -a cat
 Password:
