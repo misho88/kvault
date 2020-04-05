@@ -1,0 +1,117 @@
+#!/usr/bin/env python3
+
+import argparse
+from pathlib import Path
+
+
+def positive_int(text):
+    try:
+        i = int(text)
+        if i <= 0:
+            raise ValueError(f'{i} is not positive')
+        return i
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(
+            f"could not interpret {text} as a positive int"
+        ) from e
+
+
+def positive_int_or_float(text):
+    try:
+        return positive_int(text)
+    except argparse.ArgumentTypeError:
+        try:
+            f = float(text)
+            if not 0.0 < f <= 1.0:
+                raise ValueError(f'{f} is not positive and <= 1')
+            return f
+        except ValueError as e:
+            raise argparse.ArgumentTypeError(
+                f"could not interpret {text} as a positive int or float <= 1"
+            ) from e
+
+
+app = Path(__file__)
+parser = argparse.ArgumentParser(
+    prog=app.name,
+    description='xkcdpass-based passwords that websites are likely to accept',
+    epilog="The generated password will be made of tokens, 3 to 9 characters "
+           "long, the last of which will have 1 capital, 1 number and 1 "
+           "punctuation mark, in random order. The rest will be English words."
+)
+parser.add_argument('--max-length', '-x', default=48, type=positive_int,
+    help='the maximum number of characters in the password (default: 48)')
+parser.add_argument('--min-length', '-n', default=0.75, type=positive_int_or_float,
+    help='the minimum number of characters, as an absolute figure or a '
+         'fraction of --max-length (default: 0.75)')
+parser.add_argument('--delimiter', '-d', default='-',
+    help='what to put between words in the password')
+parser.add_argument('--suffix', '-s', default='\n',
+    help='what to put at the end of the password (default: a new line)')
+args = parser.parse_args()
+
+from math import ceil
+from string import ascii_uppercase, digits, punctuation
+import secrets
+import random
+from xkcdpass import xkcd_password as xp
+
+if isinstance(args.min_length, float):
+    args.min_length = int(ceil(args.min_length * args.max_length))
+
+if args.min_length > args.max_length:
+    args.min_length = args.max_length
+
+words = sorted(xp.generate_wordlist(min_length=3, max_length=9), key=len)
+
+idxs = [ 0 ]
+for i, w in enumerate(words):
+    if len(w) != len(words[idxs[-1]]):
+        idxs.append(i)
+idxs.append(None)
+words = { len(words[i]): words[i:j] for i, j in zip(idxs, idxs[1:]) }
+
+suffix = [
+    secrets.choice(ascii_uppercase),
+    secrets.choice(digits),
+    secrets.choice(punctuation),
+]
+random.shuffle(suffix)
+suffix = ''.join(suffix)
+
+pwlen = random.randint(args.min_length, args.max_length)
+pwlen -= len(suffix)
+
+wordlens = [
+    random.randint(3, 9) + len(args.delimiter)
+    for _ in range(ceil(pwlen / 3))
+]
+
+cumsum = [ 0 ]
+for wl in wordlens:
+    nxt = cumsum[-1] + wl
+    if nxt < pwlen:
+        cumsum.append(nxt)
+    else:
+        break
+cumsum.append(pwlen)
+
+minlen = 3 + len(args.delimiter)
+for i in range(len(cumsum) - 1, 0, -1):
+    toklen = cumsum[i] - cumsum[i - 1]
+    if toklen < minlen:
+        cumsum[i - 1] -= minlen - toklen
+    else:
+        break
+
+tokens = [
+    secrets.choice(words[j - i - len(args.delimiter)])
+    for i, j in zip(cumsum, cumsum[1:])
+]
+# just because shorter words will tend toward the end
+random.shuffle(tokens)
+tokens.append(suffix)
+
+password = args.delimiter.join(tokens)
+
+print(password, end=args.suffix)
