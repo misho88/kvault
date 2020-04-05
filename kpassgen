@@ -46,8 +46,6 @@ parser.add_argument('--min-length', '-n', default=0.75, type=positive_int_or_flo
          'fraction of --max-length (default: 0.75)')
 parser.add_argument('--delimiter', '-d', default='-',
     help='what to put between words in the password')
-parser.add_argument('--suffix', '-s', default='\n',
-    help='what to put at the end of the password (default: a new line)')
 args = parser.parse_args()
 
 from math import ceil
@@ -114,4 +112,4 @@ tokens.append(suffix)
 
 password = args.delimiter.join(tokens)
 
-print(password, end=args.suffix)
+print(password, end='')
